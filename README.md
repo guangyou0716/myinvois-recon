@@ -28,6 +28,8 @@ document statuses your system already stores, or a document list you saved.
 npm ci && npm run build
 node dist/cli.js examples/ledger.csv examples/documents.csv --as-of 2026-11-10T09:00
 node dist/cli.js examples/ledger.csv examples/documents.csv --as-of 2026-11-10T09:00 --json
+node dist/cli.js examples/ledger.csv examples/documents.csv --as-of 2026-11-10T09:00 --md > recon.md
+node dist/cli.js examples/ledger.csv examples/documents.csv --as-of 2026-11-10T09:00 --csv > findings.csv
 ```
 
 Exit codes: `0` no findings, `1` findings (errors or warnings), `2` input error.
@@ -64,6 +66,49 @@ void-but-valid (1, error):
 consolidated-late (1, error):
   - CON-2610 (ledger row 16): consolidated e-Invoice for 2026-10 submitted 2026-11-08 11:00:00 MYT, 11h00m after the deadline (7 calendar days after month end)
 ```
+
+### Markdown and CSV
+
+`--md` writes the same report as Markdown (for a ticket, pull request or month-end note): a summary table,
+settings, documents by status, ledger invoice states, Valid totals, consolidated e-Invoices not yet due, a count per
+finding kind and a list per kind (capped by `--limit`). Abridged:
+
+```markdown
+# MyInvois reconciliation
+
+| ledger rows | invoice numbers | duplicate ledger rows | documents | duplicate document rows dropped | findings | errors | warnings |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 17 | 16 | 1 | 15 | 1 | 14 | 11 | 3 |
+
+Settings: as of 2026-11-10 09:00:00 MYT, amount tolerance 0.00.
+...
+## Findings: 14 findings (11 errors, 3 warnings)
+
+| kind | severity | count |
+| --- | --- | ---: |
+| not-submitted | error | 1 |
+...
+### total-mismatch: 1
+
+- **INV-002** (ledger row 3): ledger 530.00 vs e-Invoice 503.00 (difference -27.00)
+```
+
+`--csv` writes one row per finding (all of them; `--limit` does not apply) in the text report's kind order, for a
+spreadsheet or another script. Columns: `kind, severity, invoice, ledger_row, uuids` (space separated),
+`ledger_amount, document_amount` (decimal MYR as in `--json`; net amounts for `net-mismatch`), `deadline` (UTC ISO
+instant as in `--json`; for consolidated deadlines the exclusive end, 00:00 MYT on day 8) and `detail`. Cells are
+quoted per RFC 4180; text starting with `= + - @`, tab or CR gets a leading `'` so spreadsheets do not run it as a
+formula (plain negative numbers are left alone). No findings = header line only.
+
+```csv
+kind,severity,invoice,ledger_row,uuids,ledger_amount,document_amount,deadline,detail
+not-submitted,error,INV-003,4,,212.00,,,no e-Invoice with internalId INV-003
+total-mismatch,error,INV-002,3,DEMO0000000000000000000002,530.00,503.00,,ledger 530.00 vs e-Invoice 503.00 (difference -27.00)
+duplicate-valid,error,INV-010,,DEMO0000000000000000000010 DEMO0000000000000000000011,,,,2 Valid e-Invoices with the same internalId
+```
+
+Pick one of `--json`, `--md`, `--csv` (more than one is an input error, exit 2). Exit codes are the same for every
+format.
 
 ## Input
 
@@ -150,8 +195,10 @@ document list carries no tax total; use `net` + `total` instead.
 --void-values <a,b>          ledger status values meaning voided
 --ledger-column <key=Header> ledger column override (repeatable or comma list)
 --doc-column <key=Header>    document column override
---limit <n>                  findings listed per kind in the text report (default 50)
+--limit <n>                  findings listed per kind in the text and Markdown reports (default 50)
 --json                       JSON report (amounts as decimal strings, instants as UTC ISO)
+--md                         Markdown report
+--csv                        CSV, one row per finding (all findings)
 ```
 
 ## Library
@@ -159,13 +206,13 @@ document list carries no tax total; use `net` + `total` instead.
 ```ts
 // not published to npm; import from the build in a clone
 import { readFileSync } from 'node:fs';
-import { check, parseDocuments, parseLedger, textReport } from './dist/index.js';
+import { check, csvReport, jsonReport, mdReport, parseDocuments, parseLedger, textReport } from './dist/index.js';
 
 const ledger = parseLedger(readFileSync('ledger.csv', 'utf8'));
 const documents = parseDocuments(readFileSync('documents.csv', 'utf8'));
 const report = check(ledger, documents, { asOf: Date.now(), toleranceCents: 1 });
 console.log(report.summary.states, report.findings.length);
-process.stdout.write(textReport(report));
+process.stdout.write(textReport(report)); // or mdReport(report, 50), csvReport(report), jsonReport(report)
 ```
 
 `report.summary` holds the invariants used in tests: the states add up to `invoices`, and
@@ -184,7 +231,7 @@ process.stdout.write(textReport(report));
 ```sh
 npm ci
 npm run lint && npm run typecheck && npm test
-npm run build && npm run smoke   # 100,000 ledger rows + 90,500 documents through the built CLI
+npm run build && npm run smoke   # 100,000 ledger rows + 90,500 documents through the built CLI (all formats)
 ```
 
 All example data is synthetic (`DEMO...` uuids, made-up invoice numbers and amounts).

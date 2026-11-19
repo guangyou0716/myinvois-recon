@@ -71,5 +71,16 @@ const t2 = Date.now();
 const t = run([ledgerFile, docsFile, '--as-of', '2026-11-20']);
 const ms2 = Date.now() - t2;
 if (t.status !== 1 || !t.stdout.includes('Findings: 30600 findings (20600 errors, 10000 warnings)')) fail(`text: status ${t.status} ${t.stderr}`);
-if (ms > 20_000 || ms2 > 20_000) fail(`too slow: json ${ms} ms, text ${ms2} ms`);
-console.log(`smoke: OK ${N} ledger rows, ${90_000 + EXTRA} documents; json ${ms} ms, text ${ms2} ms`);
+const t3 = Date.now();
+const c = run([ledgerFile, docsFile, '--as-of', '2026-11-20', '--csv']);
+const ms3 = Date.now() - t3;
+const csvLines = c.stdout.trimEnd().split('\n');
+if (c.status !== 1 || csvLines.length !== 30_601 || csvLines[0] !== 'kind,severity,invoice,ledger_row,uuids,ledger_amount,document_amount,deadline,detail') {
+  fail(`csv: status ${c.status}, ${csvLines.length} lines ${c.stderr}`);
+}
+const t4 = Date.now();
+const m = run([ledgerFile, docsFile, '--as-of', '2026-11-20', '--md']);
+const ms4 = Date.now() - t4;
+if (m.status !== 1 || !m.stdout.includes('## Findings: 30600 findings (20600 errors, 10000 warnings)')) fail(`md: status ${m.status} ${m.stderr}`);
+if (ms > 20_000 || ms2 > 20_000 || ms3 > 20_000 || ms4 > 20_000) fail(`too slow: json ${ms} ms, text ${ms2} ms, csv ${ms3} ms, md ${ms4} ms`);
+console.log(`smoke: OK ${N} ledger rows, ${90_000 + EXTRA} documents; json ${ms} ms, text ${ms2} ms, csv ${ms3} ms, md ${ms4} ms`);

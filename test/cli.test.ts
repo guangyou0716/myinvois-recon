@@ -107,6 +107,37 @@ describe('cli', () => {
     expect(r.out).toContain('No findings.\n');
   });
 
+  it('--md example report: exit 1, findings per kind', () => {
+    const r = run([...EX, '--md']);
+    expect(r.code).toBe(1);
+    expect(r.err).toBe('');
+    expect(r.out.startsWith('# MyInvois reconciliation\n')).toBe(true);
+    expect(r.out).toContain('| 17 | 16 | 1 | 15 | 1 | 14 | 11 | 3 |\n');
+    expect(r.out).toContain('| CON-2611 | 17 | 2026-12-07 23:59:59 MYT |\n');
+    expect(r.out).toContain('### total-mismatch: 1\n\n- **INV-002** (ledger row 3): ledger 530.00 vs e-Invoice 503.00 (difference -27.00)\n');
+  });
+
+  it('--csv example: one row per finding, --limit ignored', () => {
+    const r = run([...EX, '--csv', '--limit', '1']);
+    expect(r.code).toBe(1);
+    expect(r.err).toBe('');
+    const rows = r.out.trimEnd().split('\n');
+    expect(rows[0]).toBe('kind,severity,invoice,ledger_row,uuids,ledger_amount,document_amount,deadline,detail');
+    expect(rows).toHaveLength(15);
+    expect(rows).toContain('total-mismatch,error,INV-002,3,DEMO0000000000000000000002,530.00,503.00,,ledger 530.00 vs e-Invoice 503.00 (difference -27.00)');
+  });
+
+  it.each([
+    ['--json', '--md'],
+    ['--json', '--csv'],
+    ['--md', '--csv'],
+  ])('%s with %s: exit 2', (a, b) => {
+    const r = run([...EX, a, b]);
+    expect(r.code).toBe(2);
+    expect(r.out).toBe('');
+    expect(r.err).toBe('myinvois-recon: pick one of --json, --md, --csv.\n');
+  });
+
   it('help exits 0', () => {
     const r = run(['--help']);
     expect(r.code).toBe(0);
