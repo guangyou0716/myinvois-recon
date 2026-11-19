@@ -2,11 +2,12 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { check } from './check.js';
+import { check, DIRECTIONS } from './check.js';
+import type { Direction } from './check.js';
 import { InputError } from './errors.js';
 import { DEFAULT_VOID_VALUES, DOCUMENT_KEYS, LEDGER_KEYS, parseColumnMap, parseDocuments, parseLedger } from './input.js';
 import { parseMoney } from './money.js';
-import { csvReport, mdReport } from './formats.js';
+import { csvReport, mdReport, monthsCsv } from './formats.js';
 import { jsonReport, textReport } from './report.js';
 import { MYT_OFFSET_MINUTES, parseStamp } from './time.js';
 
@@ -18,22 +19,30 @@ ledger voids with a Valid e-Invoice, amount / type mismatches, duplicate Valid d
 ledger row, buyer rejection requests and the consolidated e-Invoice 7-day deadline. Offline; reads two local files
 and never calls the MyInvois API.
 
-ledger.csv:     header with invoice,date,total and optional type, net, status, consolidated columns.
+ledger.csv:     header with invoice,date,total and optional type, net, status, consolidated, supplier columns.
                 invoice = your invoice number (the internalId sent to MyInvois); date = 2026-10-31 (MYT);
                 total = amount incl. tax (sign ignored, credit notes may be negative); type = 01-04 / 11-14 or a
                 name (invoice, credit note, ...); status = a void value (--void-values) marks a voided invoice;
-                consolidated = yes for a monthly consolidated e-Invoice row (date = any day of that month).
+                consolidated = yes for a monthly consolidated e-Invoice row (date = any day of that month);
+                supplier = supplier TIN (AP ledger, --direction received).
 documents.csv:  MyInvois document list with the API field names as header: uuid, internalId, status, total and
                 optional typeName, netAmount, dateTimeIssued, dateTimeReceived, dateTimeValidated, cancelDateTime,
-                rejectRequestDateTime, documentStatusReason, buyerTin. Status = Submitted / Valid / Invalid /
-                Cancelled. Timestamps without a zone are UTC (as MyInvois returns them). Identical repeated rows
-                (overlapping exports) are dropped.
+                rejectRequestDateTime, documentStatusReason, buyerTin, issuerTin. Status = Submitted / Valid /
+                Invalid / Cancelled. Timestamps without a zone are UTC (as MyInvois returns them). Identical
+                repeated rows (overlapping exports) are dropped.
 
 Matching: document internalId = ledger invoice number (exact). Calendar days and months are Malaysia time.
 
+--direction received: purchase side. The ledger is your AP ledger with a supplier column (supplier TIN) and the
+documents are e-Invoices you received; matched on issuerTin = supplier (case-insensitive) + internalId = the
+supplier's invoice number. Only Valid and Cancelled documents are used (a receiver cannot see Submitted / Invalid
+ones); consolidated rows are not allowed; not-submitted becomes not-received.
+
 Findings (error unless marked warning):
   not-submitted          booked invoice with no document at all
+  not-received           (--direction received) booked purchase with no Valid / Cancelled supplier e-Invoice
   consolidated-overdue   consolidated row with no document after its deadline (7 calendar days after month end)
+  consolidated-not-valid consolidated document still only Submitted (not Valid) after the deadline
   invalid-only           only Invalid documents for the invoice
   cancelled-but-booked   only Cancelled (and Invalid) documents, but the ledger still books the invoice
   void-but-valid         ledger void, but a Valid / Submitted document exists (72 h cancel window open or closed)
@@ -61,13 +70,18 @@ Options:
   --ledger-column <key=Header> ledger column name override, repeatable or comma list; keys: ${LEDGER_KEYS.join(', ')}
   --doc-column <key=Header>    document column name override; keys: uuid, internalId, status, total, typeName,
                                netAmount, dateTimeIssued, dateTimeReceived, dateTimeValidated, cancelDateTime,
-                               rejectRequestDateTime, documentStatusReason, buyerTin
+                               rejectRequestDateTime, documentStatusReason, buyerTin, issuerTin
+  --direction <dir>            issued (default): sales ledger vs your e-Invoices; received: AP ledger vs
+                               supplier e-Invoices (see above)
+  --by-month                   add a per-month summary (MYT): booked invoices, ledger total, consolidated rows,
+                               voided, Valid e-Invoices and their total, difference (text, --json, --md)
   --limit <n>                  findings listed per kind in the text and Markdown reports (default 50)
   --json                       JSON report (summary, counts, due consolidated e-Invoices, every finding)
   --md                         Markdown report (summary tables, findings per kind capped by --limit)
   --csv                        CSV, one row per finding (all findings): kind, severity, invoice, ledger_row,
                                uuids, ledger_amount, document_amount, deadline, detail
-                               (pick one of --json, --md, --csv)
+  --csv-months                 CSV, one row per month (the --by-month summary) instead of the findings
+                               (pick one of --json, --md, --csv, --csv-months)
   -h, --help                   show this help
 
 Exit codes: 0 no findings, 1 findings (errors or warnings), 2 input error.
@@ -105,6 +119,9 @@ export function main(argv: string[]): number {
         json: { type: 'boolean' },
         md: { type: 'boolean' },
         csv: { type: 'boolean' },
+        'csv-months': { type: 'boolean' },
+        'by-month': { type: 'boolean' },
+        direction: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
       },
     });
@@ -113,6 +130,14 @@ export function main(argv: string[]): number {
       return 0;
     }
     if ([values.json, values.md, values.csv].filter(Boolean).length > 1) throw new InputError('pick one of --json, --md, --csv.');
+    if (values['csv-months'] && (values.json || values.md || values.csv)) throw new InputError('pick one of --json, --md, --csv, --csv-months.');
+    if (values['by-month'] && values.csv) throw new InputError('--by-month does not change the findings CSV; use --csv-months for the per-month CSV.');
+    let direction: Direction | undefined;
+    if (values.direction !== undefined) {
+      const d = values.direction.trim().toLowerCase();
+      if (!(DIRECTIONS as readonly string[]).includes(d)) throw new InputError(`--direction must be ${DIRECTIONS.join(' or ')}.`);
+      direction = d as Direction;
+    }
     const [ledgerFile, documentsFile, ...rest] = positionals;
     if (ledgerFile === undefined || documentsFile === undefined) {
       throw new InputError('need the ledger CSV and the documents CSV; see --help.');
@@ -141,9 +166,19 @@ export function main(argv: string[]): number {
       ...(asOf !== undefined && { asOf }),
       ...(values.period !== undefined && { period: values.period.trim() }),
       ...(toleranceCents !== undefined && { toleranceCents }),
+      ...(direction !== undefined && { direction }),
+      ...((values['by-month'] || values['csv-months']) && { byMonth: true }),
     });
     process.stdout.write(
-      values.json ? jsonReport(report) : values.md ? mdReport(report, limit) : values.csv ? csvReport(report) : textReport(report, limit),
+      values.json
+        ? jsonReport(report)
+        : values.md
+          ? mdReport(report, limit)
+          : values.csv
+            ? csvReport(report)
+            : values['csv-months']
+              ? monthsCsv(report.months)
+              : textReport(report, limit),
     );
     return report.findings.length ? 1 : 0;
   } catch (e) {

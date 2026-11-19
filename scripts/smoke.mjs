@@ -21,14 +21,18 @@ const ledger = ['invoice,date,total'];
 const docs = ['uuid,internalId,status,total,dateTimeIssued,dateTimeValidated'];
 // i % 10: 0-6 Valid (i % 1000 === 1 has a 1-cent difference), 7 Submitted, 8 Cancelled, 9 no document.
 const STATUS = ['Valid', 'Valid', 'Valid', 'Valid', 'Valid', 'Valid', 'Valid', 'Submitted', 'Cancelled'];
+let ledgerCents = 0;
+let validCents = 0;
 for (let i = 0; i < N; i++) {
   const inv = `INV-${String(i).padStart(6, '0')}`;
   const day = String(1 + (i % 28)).padStart(2, '0');
   const cents = 1000 + (i % 50_000);
   ledger.push(`${inv},2026-10-${day},${money(cents)}`);
+  ledgerCents += cents;
   const k = i % 10;
   if (k < 9) {
     const total = i % 1000 === 1 ? cents + 1 : cents;
+    if (STATUS[k] === 'Valid') validCents += total;
     const validated = STATUS[k] === 'Submitted' ? '' : `2026-10-${day}T03:00:00Z`;
     docs.push(`U${String(i).padStart(25, '0')},${inv},${STATUS[k]},${money(total)},2026-10-${day}T02:00:00Z,${validated}`);
   }
@@ -82,5 +86,11 @@ const t4 = Date.now();
 const m = run([ledgerFile, docsFile, '--as-of', '2026-11-20', '--md']);
 const ms4 = Date.now() - t4;
 if (m.status !== 1 || !m.stdout.includes('## Findings: 30600 findings (20600 errors, 10000 warnings)')) fail(`md: status ${m.status} ${m.stderr}`);
-if (ms > 20_000 || ms2 > 20_000 || ms3 > 20_000 || ms4 > 20_000) fail(`too slow: json ${ms} ms, text ${ms2} ms, csv ${ms3} ms, md ${ms4} ms`);
-console.log(`smoke: OK ${N} ledger rows, ${90_000 + EXTRA} documents; json ${ms} ms, text ${ms2} ms, csv ${ms3} ms, md ${ms4} ms`);
+const t5 = Date.now();
+const mo = run([ledgerFile, docsFile, '--as-of', '2026-11-20', '--csv-months']);
+const ms5 = Date.now() - t5;
+validCents += EXTRA * 100;
+const monthLine = `2026-10,${N},70000,${money(ledgerCents)},0,0.00,0,${70_000 + EXTRA},${money(validCents)},${validCents >= ledgerCents ? '' : '-'}${money(Math.abs(validCents - ledgerCents))}`;
+if (mo.status !== 1 || mo.stdout.trimEnd().split('\n')[1] !== monthLine) fail(`csv-months: status ${mo.status} ${JSON.stringify(mo.stdout)} expected ${monthLine} ${mo.stderr}`);
+if (ms > 20_000 || ms2 > 20_000 || ms3 > 20_000 || ms4 > 20_000 || ms5 > 20_000) fail(`too slow: json ${ms} ms, text ${ms2} ms, csv ${ms3} ms, md ${ms4} ms, csv-months ${ms5} ms`);
+console.log(`smoke: OK ${N} ledger rows, ${90_000 + EXTRA} documents; json ${ms} ms, text ${ms2} ms, csv ${ms3} ms, md ${ms4} ms, csv-months ${ms5} ms`);
