@@ -6,6 +6,7 @@ import { check } from './check.js';
 import { InputError } from './errors.js';
 import { DEFAULT_VOID_VALUES, DOCUMENT_KEYS, LEDGER_KEYS, parseColumnMap, parseDocuments, parseLedger } from './input.js';
 import { parseMoney } from './money.js';
+import { csvReport, mdReport } from './formats.js';
 import { jsonReport, textReport } from './report.js';
 import { MYT_OFFSET_MINUTES, parseStamp } from './time.js';
 
@@ -61,8 +62,12 @@ Options:
   --doc-column <key=Header>    document column name override; keys: uuid, internalId, status, total, typeName,
                                netAmount, dateTimeIssued, dateTimeReceived, dateTimeValidated, cancelDateTime,
                                rejectRequestDateTime, documentStatusReason, buyerTin
-  --limit <n>                  findings listed per kind in the text report (default 50)
+  --limit <n>                  findings listed per kind in the text and Markdown reports (default 50)
   --json                       JSON report (summary, counts, due consolidated e-Invoices, every finding)
+  --md                         Markdown report (summary tables, findings per kind capped by --limit)
+  --csv                        CSV, one row per finding (all findings): kind, severity, invoice, ledger_row,
+                               uuids, ledger_amount, document_amount, deadline, detail
+                               (pick one of --json, --md, --csv)
   -h, --help                   show this help
 
 Exit codes: 0 no findings, 1 findings (errors or warnings), 2 input error.
@@ -98,6 +103,8 @@ export function main(argv: string[]): number {
         'doc-column': { type: 'string', multiple: true },
         limit: { type: 'string' },
         json: { type: 'boolean' },
+        md: { type: 'boolean' },
+        csv: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
       },
     });
@@ -105,6 +112,7 @@ export function main(argv: string[]): number {
       process.stdout.write(USAGE);
       return 0;
     }
+    if ([values.json, values.md, values.csv].filter(Boolean).length > 1) throw new InputError('pick one of --json, --md, --csv.');
     const [ledgerFile, documentsFile, ...rest] = positionals;
     if (ledgerFile === undefined || documentsFile === undefined) {
       throw new InputError('need the ledger CSV and the documents CSV; see --help.');
@@ -134,7 +142,9 @@ export function main(argv: string[]): number {
       ...(values.period !== undefined && { period: values.period.trim() }),
       ...(toleranceCents !== undefined && { toleranceCents }),
     });
-    process.stdout.write(values.json ? jsonReport(report) : textReport(report, limit));
+    process.stdout.write(
+      values.json ? jsonReport(report) : values.md ? mdReport(report, limit) : values.csv ? csvReport(report) : textReport(report, limit),
+    );
     return report.findings.length ? 1 : 0;
   } catch (e) {
     if (e instanceof InputError || (e as { code?: string }).code?.startsWith('ERR_PARSE_ARGS')) {
