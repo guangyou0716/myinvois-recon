@@ -1,6 +1,7 @@
 import { FINDING_KINDS, STATES, WARNING_KINDS } from './check.js';
-import type { Finding, Report } from './check.js';
+import type { Finding, MonthSummary, Report } from './check.js';
 import { formatMoney } from './money.js';
+import { label } from './report.js';
 import { formatMyt } from './time.js';
 import type { DocumentStatus } from './vocabulary.js';
 
@@ -39,10 +40,48 @@ const byKind = (findings: readonly Finding[]) => [...findings].sort((a, b) => FI
  * cells where a finding has no such value. No findings = header only.
  */
 export function csvReport(r: Report): string {
-  const lines = [csvLine(CSV_HEADER)];
+  const received = r.direction === 'received';
+  const header = received ? [...CSV_HEADER.slice(0, 3), 'supplier', ...CSV_HEADER.slice(3)] : CSV_HEADER;
+  const lines = [csvLine(header)];
   for (const f of byKind(r.findings)) {
+    const who: Cell[] = received ? [f.invoice, f.supplier] : [f.invoice];
     lines.push(
-      csvLine([f.kind, f.severity, f.invoice, f.ledgerRow, f.uuids.join(' '), money(f.ledgerAmount), money(f.documentAmount), iso(f.deadline), f.detail]),
+      csvLine([f.kind, f.severity, ...who, f.ledgerRow, f.uuids.join(' '), money(f.ledgerAmount), money(f.documentAmount), iso(f.deadline), f.detail]),
+    );
+  }
+  return lines.join('\n') + '\n';
+}
+
+export const MONTH_CSV_HEADER = [
+  'month',
+  'invoices',
+  'valid_invoices',
+  'ledger_total',
+  'consolidated',
+  'consolidated_total',
+  'voided',
+  'valid_documents',
+  'valid_document_total',
+  'difference',
+];
+
+/** Per-month summary as CSV (one row per month, amounts decimal MYR). A report without months gives the header only. */
+export function monthsCsv(months: readonly MonthSummary[] | undefined): string {
+  const lines = [csvLine(MONTH_CSV_HEADER)];
+  for (const m of months ?? []) {
+    lines.push(
+      csvLine([
+        m.month,
+        m.invoices,
+        m.validInvoices,
+        formatMoney(m.ledgerTotal),
+        m.consolidated,
+        formatMoney(m.consolidatedTotal),
+        m.voided,
+        m.validDocuments,
+        formatMoney(m.validDocumentTotal),
+        formatMoney(m.difference),
+      ]),
     );
   }
   return lines.join('\n') + '\n';
@@ -60,6 +99,8 @@ export function mdReport(r: Report, limit = 50): string {
   const settings = [`as of ${formatMyt(r.asOf)}`];
   if (r.period !== undefined) settings.push(`period ${r.period} (${plural(s.ledgerRowsOutsidePeriod, 'ledger row')} outside ignored)`);
   settings.push(`amount tolerance ${formatMoney(r.toleranceCents)}`);
+  if (r.direction === 'received') settings.push('direction received (supplier e-Invoices vs AP ledger, matched on issuer TIN + internalId)');
+  if (s.ignoredDocuments) settings.push(`${plural(s.ignoredDocuments, 'Submitted / Invalid document')} ignored (a receiver only sees Valid and Cancelled)`);
   const out = [
     '# MyInvois reconciliation',
     '',
@@ -84,6 +125,22 @@ export function mdReport(r: Report, limit = 50): string {
     `Valid totals: ledger ${formatMoney(s.ledgerValidTotal)}, e-Invoices ${formatMoney(s.documentValidTotal)} (difference ${formatMoney(s.documentValidTotal - s.ledgerValidTotal)}); booked without a Valid e-Invoice ${formatMoney(s.ledgerUnmatchedTotal)}.`,
   ];
 
+  if (r.months !== undefined) {
+    out.push(
+      '',
+      '## By month (MYT)',
+      '',
+      'Ledger by invoice date; Valid e-Invoices by their ledger row, unbooked ones by issue date.',
+      '',
+      '| month | invoices | valid | ledger total | consolidated | consolidated total | voided | Valid docs | e-Invoice total | difference |',
+      '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+    );
+    for (const m of r.months) {
+      out.push(
+        `| ${m.month} | ${m.invoices} | ${m.validInvoices} | ${formatMoney(m.ledgerTotal)} | ${m.consolidated} | ${formatMoney(m.consolidatedTotal)} | ${m.voided} | ${m.validDocuments} | ${formatMoney(m.validDocumentTotal)} | ${formatMoney(m.difference)} |`,
+      );
+    }
+  }
   if (r.due.length) {
     out.push('', `## Consolidated e-Invoices not yet due: ${r.due.length}`, '', '| invoice | ledger row | submit by |', '| --- | ---: | --- |');
     for (const d of r.due.slice(0, limit)) out.push(`| ${mdCell(d.invoice)} | ${d.ledgerRow} | ${formatMyt(d.deadline - 1000)} |`);
@@ -105,7 +162,7 @@ export function mdReport(r: Report, limit = 50): string {
     out.push('', `### ${kind}: ${list.length}`, '');
     for (const f of list.slice(0, limit)) {
       const where = f.ledgerRow !== undefined ? ` (ledger row ${f.ledgerRow})` : '';
-      out.push(`- **${mdCell(f.invoice)}**${where}: ${mdCell(f.detail)}`);
+      out.push(`- **${mdCell(label(f))}**${where}: ${mdCell(f.detail)}`);
     }
     if (list.length > limit) out.push(more(list.length - limit));
   }

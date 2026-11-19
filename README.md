@@ -10,7 +10,11 @@ your **MyInvois document list** and lists every invoice where the two disagree.
 - voided in the ledger while a Valid e-Invoice still exists, with the 72-hour cancel window still open or closed;
 - different total / net amount or document type; the same invoice number validated twice; a Valid e-Invoice with
   no ledger row;
-- the monthly consolidated e-Invoice submitted after its deadline (7 calendar days after month end), or not at all.
+- the monthly consolidated e-Invoice submitted after its deadline (7 calendar days after month end), still not
+  Valid after it, or not at all.
+
+Optional extras: a per-month summary of ledger vs Valid e-Invoice totals (`--by-month`, `--csv-months`) and the
+purchase side, supplier e-Invoices you received vs your AP ledger (`--direction received`).
 
 It reads two local CSV files, never calls the MyInvois API, needs no credentials, and has no runtime dependencies.
 TypeScript CLI + library, Node 20+.
@@ -107,8 +111,64 @@ total-mismatch,error,INV-002,3,DEMO0000000000000000000002,530.00,503.00,,ledger 
 duplicate-valid,error,INV-010,,DEMO0000000000000000000010 DEMO0000000000000000000011,,,,2 Valid e-Invoices with the same internalId
 ```
 
-Pick one of `--json`, `--md`, `--csv` (more than one is an input error, exit 2). Exit codes are the same for every
-format.
+Pick one of `--json`, `--md`, `--csv`, `--csv-months` (more than one is an input error, exit 2). Exit codes are the
+same for every format.
+
+### Per-month summary
+
+`--by-month` adds a table per Malaysia-time month to the text, `--json` (`months` array, amounts as strings) and
+`--md` reports; `--csv-months` prints only that table as CSV (`month, invoices, valid_invoices, ledger_total,
+consolidated, consolidated_total, voided, valid_documents, valid_document_total, difference`). Without these flags
+the output is unchanged.
+
+```text
+$ node dist/cli.js examples/ledger.csv examples/documents.csv --as-of 2026-11-10T09:00 --by-month
+...
+By month (MYT; ledger by invoice date, Valid e-Invoices by their ledger row, unbooked ones by issue date):
+  month    invoices  valid  ledger total  consolidated  voided  Valid docs  e-Invoice total  difference
+  2026-09         1      0       1590.00   1 / 1590.00       0           0             0.00    -1590.00
+  2026-10        11      7       8787.40   1 / 3180.00       2           9          8809.00       21.60
+  2026-11         1      0       2650.00   1 / 2650.00       1           1           742.00    -1908.00
+```
+
+- `invoices` / `ledger total`: booked (not void) distinct invoice numbers dated in the month, consolidated rows
+  included (`consolidated` shows how many and their total); `valid` = those in state `valid`; `voided` = void rows.
+- `Valid docs` / `e-Invoice total`: every Valid document of the month's ledger invoices (duplicates and documents
+  of voided invoices included, so the difference shows them) plus Valid documents with no ledger row, by their
+  `dateTimeIssued` month (`unknown` without one). A consolidated e-Invoice issued in early November for October
+  therefore counts in October, next to its ledger row.
+- `difference` = e-Invoice total - ledger total. Amounts are absolute values like the rest of the report (credit
+  notes are not netted against invoices).
+- With `--period` only that month is listed (plus `unknown` for unbooked documents without an issue date).
+
+### Received (purchase) e-Invoices
+
+`--direction received` checks the buyer side: your **AP ledger** (supplier invoices you booked) against the
+e-Invoices suppliers issued to you. The ledger needs a `supplier` column with the supplier's TIN and the document
+list an `issuerTin` column (the Get Recent Documents field "TIN of issuer" [2]). A document belongs to a ledger row
+when `issuerTin` equals `supplier` (trimmed, case-insensitive) **and** `internalId` equals the supplier's invoice
+number, so two suppliers may use the same number.
+
+```sh
+node dist/cli.js examples/ap-ledger.csv examples/received-documents.csv --direction received --as-of 2026-11-02T09:00
+```
+
+Differences to the default (issued) direction, kept conservative:
+- Only `Valid` and `Cancelled` documents are used: per the SDK a receiver can only retrieve those two statuses [2].
+  `Submitted` / `Invalid` rows are ignored and counted (`ignoredDocuments` in `--json`), so `pending` and
+  `invalid-only` never appear.
+- A booked purchase with no Valid or Cancelled e-Invoice from that supplier is `not-received` (instead of
+  `not-submitted`): ask the supplier for it.
+- Consolidated rows are rejected (exit 2): consolidated e-Invoices are issued by the seller, so the consolidated
+  checks do not apply.
+- `void-but-valid`, `cancelled-but-booked`, `rejection-requested` and `not-in-ledger` keep their rules but the
+  advice is the buyer's: request rejection or ask the supplier to cancel within 72 h of validation [5], after that
+  the supplier has to issue a credit / refund note [3]; a supplier e-Invoice missing from the AP ledger may be an
+  unbooked purchase.
+- Findings carry the supplier TIN (`supplier` in `--json`, an extra `supplier` column after `invoice` in `--csv`,
+  `TIN invoice` in the text and Markdown reports).
+- Assumptions: self-billed e-Invoices (which you issue yourself) belong to the default direction; the tool does not
+  check whether a supplier is exempt from issuing e-Invoices.
 
 ## Input
 
@@ -124,6 +184,7 @@ format.
 | `net` | no | amount before tax, compared with `netAmount` |
 | `status` | no | a value from `--void-values` (default `void,voided,cancelled,canceled`) marks a voided invoice |
 | `consolidated` | no | `yes` for a monthly consolidated e-Invoice row; its `date` is any day of the month it covers |
+| `supplier` | with `--direction received` | supplier TIN of an AP ledger row |
 
 **documents.csv** - one row per MyInvois document, with the field names of the MyInvois document list (Get Recent
 Documents / Search Documents) as header; rename with `--doc-column key=Header`.
@@ -137,6 +198,7 @@ Documents / Search Documents) as header; rename with `--doc-column key=Header`.
 | `dateTimeReceived`, `dateTimeValidated` | no | consolidated deadline (received, else validated, else issued), 72 h windows |
 | `cancelDateTime`, `rejectRequestDateTime`, `documentStatusReason` | no | cancellation / rejection details |
 | `buyerTin` | no | consolidated-buyer |
+| `issuerTin` | with `--direction received` | matching (supplier TIN) |
 
 Timestamps without a zone are read as UTC, as MyInvois returns them. Rows that repeat an earlier row exactly
 (overlapping exports) are dropped and counted; the same `uuid` with different values is an input error. Row numbers
@@ -152,7 +214,9 @@ Invalid / Cancelled attempts for the same number.
 | finding | severity | rule | source |
 | --- | --- | --- | --- |
 | `not-submitted` | error | booked, no document with that internalId | [1] |
+| `not-received` | error | (`--direction received`) booked purchase, no Valid / Cancelled e-Invoice from that supplier with that internalId | [1], [2] |
 | `consolidated-overdue` | error | consolidated row, no document, deadline passed | [4] |
+| `consolidated-not-valid` | error | consolidated row whose documents are only Submitted (not Valid) at or after the deadline; says whether it was received in time or how late (also reported as `pending`) | [4] |
 | `invalid-only` | error | only Invalid documents | [2] |
 | `cancelled-but-booked` | error | only Cancelled (and Invalid) documents, ledger not void | [2], [3] |
 | `void-but-valid` | error | ledger void, Valid / Submitted document exists; shows whether the 72 h cancel window is open (else credit / refund note) | [3] |
@@ -182,6 +246,10 @@ Sources:
 5. MyInvois SDK, Reject Document (within 72 hours from validation; the document stays Valid until cancelled):
    https://sdk.myinvois.hasil.gov.my/einvoicingapi/04-reject-document/
 
+`consolidated-overdue` only covers a month with no document at all and `consolidated-late` only a Valid document,
+so `consolidated-not-valid` closes the gap of a consolidated e-Invoice that is stuck in Submitted past the deadline
+(if it later ends Invalid, the resubmission is late).
+
 Rules marked "-" are plain bookkeeping comparisons, not LHDN rules. Tax is not compared separately because the
 document list carries no tax total; use `net` + `total` instead.
 
@@ -195,10 +263,13 @@ document list carries no tax total; use `net` + `total` instead.
 --void-values <a,b>          ledger status values meaning voided
 --ledger-column <key=Header> ledger column override (repeatable or comma list)
 --doc-column <key=Header>    document column override
+--direction <dir>            issued (default) or received (supplier e-Invoices vs AP ledger)
+--by-month                   add the per-month summary (text, --json, --md)
 --limit <n>                  findings listed per kind in the text and Markdown reports (default 50)
 --json                       JSON report (amounts as decimal strings, instants as UTC ISO)
 --md                         Markdown report
 --csv                        CSV, one row per finding (all findings)
+--csv-months                 CSV, one row per month (the --by-month summary)
 ```
 
 ## Library
@@ -210,20 +281,24 @@ import { check, csvReport, jsonReport, mdReport, parseDocuments, parseLedger, te
 
 const ledger = parseLedger(readFileSync('ledger.csv', 'utf8'));
 const documents = parseDocuments(readFileSync('documents.csv', 'utf8'));
-const report = check(ledger, documents, { asOf: Date.now(), toleranceCents: 1 });
-console.log(report.summary.states, report.findings.length);
-process.stdout.write(textReport(report)); // or mdReport(report, 50), csvReport(report), jsonReport(report)
+const report = check(ledger, documents, { asOf: Date.now(), toleranceCents: 1, byMonth: true });
+console.log(report.summary.states, report.findings.length, report.months);
+process.stdout.write(textReport(report)); // or mdReport(report, 50), csvReport(report), jsonReport(report), monthsCsv(report.months)
+// purchase side: check(apLedger, receivedDocuments, { direction: 'received' })
 ```
 
 `report.summary` holds the invariants used in tests: the states add up to `invoices`, and
-`documentValidTotal - ledgerValidTotal` equals the sum of the `total-mismatch` differences.
+`documentValidTotal - ledgerValidTotal` equals the sum of the `total-mismatch` differences. With `byMonth`, the
+months' `invoices + voided` add up to `invoices`, their `validInvoices` to `states.valid`, and (without a period)
+their `validDocuments` to the number of Valid documents.
 
 ## Limits
 
 - Not tax or legal advice; it points at differences, a person decides what to do.
 - Matching is by invoice number only; documents submitted with a different `internalId` show as `not-submitted`
   plus `not-in-ledger`.
-- Received (purchase) e-Invoices are out of scope for now; give it the documents you issued.
+- Received (purchase) e-Invoices need `--direction received`, an AP ledger with supplier TINs and a document list
+  with `issuerTin`; one direction per run.
 - Day and month boundaries are Malaysia time (UTC+08:00).
 
 ## Development

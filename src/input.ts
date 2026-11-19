@@ -5,7 +5,7 @@ import { MYT_OFFSET_MINUTES, parseStamp } from './time.js';
 import { normaliseStatus, normaliseType, DOCUMENT_STATUSES } from './vocabulary.js';
 import type { DocumentStatus, DocumentType } from './vocabulary.js';
 
-export const LEDGER_KEYS = ['invoice', 'date', 'total', 'type', 'net', 'status', 'consolidated'] as const;
+export const LEDGER_KEYS = ['invoice', 'date', 'total', 'type', 'net', 'status', 'consolidated', 'supplier'] as const;
 export type LedgerKey = (typeof LEDGER_KEYS)[number];
 const LEDGER_REQUIRED: readonly LedgerKey[] = ['invoice', 'date', 'total'];
 
@@ -23,6 +23,7 @@ export const DOCUMENT_KEYS = [
   'rejectRequestDateTime',
   'documentStatusReason',
   'buyerTin',
+  'issuerTin',
 ] as const;
 export type DocumentKey = (typeof DOCUMENT_KEYS)[number];
 const DOCUMENT_REQUIRED: readonly DocumentKey[] = ['uuid', 'internalId', 'status', 'total'];
@@ -43,6 +44,8 @@ export interface LedgerEntry {
   void: boolean;
   /** The row is a monthly consolidated e-Invoice; its date is any day of the covered month. */
   consolidated: boolean;
+  /** Supplier TIN (AP ledger, used by direction received). */
+  supplier?: string;
 }
 
 /** One MyInvois document (e-Invoice side). Amounts in cents, instants in epoch ms. */
@@ -61,6 +64,8 @@ export interface EDocument {
   rejectRequested?: number;
   reason?: string;
   buyerTin?: string;
+  /** TIN of the issuer (supplier); used by direction received. */
+  issuerTin?: string;
 }
 
 export interface DocumentList {
@@ -149,6 +154,7 @@ export function parseLedger(text: string, columns: LedgerColumns = {}, voidValue
     if (!TRUE_VALUES.includes(flag) && !FALSE_VALUES.includes(flag)) {
       throw new InputError(`${where}: consolidated "${flag}" must be yes / no (or y, true, 1 / n, false, 0, empty).`);
     }
+    const supplier = cell(t, r, 'supplier');
     return {
       row,
       invoice,
@@ -158,6 +164,7 @@ export function parseLedger(text: string, columns: LedgerColumns = {}, voidValue
       ...(net !== undefined && { net }),
       void: voids.has(cell(t, r, 'status').toLowerCase()),
       consolidated: TRUE_VALUES.includes(flag),
+      ...(supplier !== '' && { supplier }),
     };
   });
 }
@@ -210,6 +217,7 @@ export function parseDocuments(text: string, columns: DocumentColumns = {}): Doc
       ...opt('rejectRequested', stamp('rejectRequestDateTime')),
       ...opt('reason', cell(t, r, 'documentStatusReason')),
       ...opt('buyerTin', cell(t, r, 'buyerTin')),
+      ...opt('issuerTin', cell(t, r, 'issuerTin')),
     } as EDocument);
   });
   return { documents, duplicateRows };

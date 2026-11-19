@@ -1,11 +1,11 @@
-export { check, FINDING_KINDS, STATES, WARNING_KINDS } from './check.js';
-export type { CheckOptions, DueItem, Finding, FindingKind, Report, State, Summary } from './check.js';
+export { check, DIRECTIONS, FINDING_KINDS, STATES, WARNING_KINDS } from './check.js';
+export type { CheckOptions, Direction, DueItem, Finding, FindingKind, MonthSummary, Report, State, Summary } from './check.js';
 export { InputError } from './errors.js';
 export { DEFAULT_VOID_VALUES, DOCUMENT_KEYS, LEDGER_KEYS, parseColumnMap, parseDocuments, parseLedger } from './input.js';
 export type { DocumentColumns, DocumentKey, DocumentList, EDocument, LedgerColumns, LedgerEntry, LedgerKey } from './input.js';
-export { CSV_HEADER, csvCell, csvReport, mdCell, mdReport } from './formats.js';
+export { CSV_HEADER, csvCell, csvReport, mdCell, mdReport, MONTH_CSV_HEADER, monthsCsv } from './formats.js';
 export { formatMoney, parseMoney } from './money.js';
-export { jsonReport, textReport } from './report.js';
+export { jsonMonth, jsonReport, textReport } from './report.js';
 export { consolidatedDeadline, formatMyt, MYT_OFFSET_MINUTES, mytMonth, parseStamp, STATE_CHANGE_WINDOW_MS } from './time.js';
 export { DOCUMENT_STATUSES, DOCUMENT_TYPES, GENERAL_PUBLIC_TIN, normaliseStatus, normaliseType } from './vocabulary.js';
 export type { DocumentStatus, DocumentType } from './vocabulary.js';
